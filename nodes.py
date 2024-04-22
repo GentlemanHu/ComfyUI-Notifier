@@ -3,7 +3,7 @@
 from notifier.notify import NotificationManager
 
 
-class Trigger:
+class GeneralNotifier:
     # ... (Other methods remain the same) ...
 
     @classmethod
@@ -44,3 +44,12 @@ class Trigger:
         return ("",)
 
 # ... (Rest of the code remains the same) ...
+
+
+NODE_CLASS_MAPPINGS = {
+    "GentlemanHu_Notifier": GeneralNotifier
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "GentlemanHu_Notifier": "GeneralNotifier"
+}
