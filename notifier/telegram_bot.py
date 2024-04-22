@@ -9,7 +9,7 @@ import os
 import threading
 
 
-from notifier.base import Notifier
+from .base import Notifier
 
 class TelegramNotifier(Notifier):
     def __init__(self, token, chat_id):

@@ -5,7 +5,7 @@ from requests_toolbelt import MultipartEncoder
 import asyncio
 import threading
 
-from notifier.base import Notifier
+from .base import Notifier
 
 
 ## 对接的是alist程序

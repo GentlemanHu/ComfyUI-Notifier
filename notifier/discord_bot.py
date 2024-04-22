@@ -5,7 +5,7 @@ import zipfile
 import asyncio
 import threading
 
-from notifier.base import Notifier
+from .base import Notifier
 
 
 class DiscordNotifier(Notifier):

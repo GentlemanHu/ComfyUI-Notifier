@@ -1,6 +1,6 @@
 # ... (Notifier classes and NotificationManager remain the same) ...
 
-from notifier.notify import NotificationManager
+from .notifier.notify import NotificationManager
 
 
 class GeneralNotifier:

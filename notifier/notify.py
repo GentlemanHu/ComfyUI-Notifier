@@ -5,10 +5,10 @@ import logging
 from typing import List, Dict
 from dotenv import load_dotenv
 
-from notifier.base import Notifier
-from notifier.discord_bot import DiscordNotifier
-from notifier.telegram_bot import TelegramNotifier
-from notifier.yike import YikeNotifier
+from .base import Notifier
+from .discord_bot import DiscordNotifier
+from .telegram_bot import TelegramNotifier
+from .yike import YikeNotifier
 # ... (Other notifier classes like TelegramNotifier and DiscordNotifier) ...
 
 class NotificationManager:
