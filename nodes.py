@@ -13,7 +13,7 @@ class GeneralNotifier:
 
         input_types = {
             "required": {
-                "file_path": ("STRING", {"default": ""}),
+                "file_path": ("STRING",),
                 "message": ("STRING", {"default": ""}),
             },
             "optional": {}
