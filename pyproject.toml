@@ -3,7 +3,7 @@ name = "comfyui-notifier"
 description = "ComfyUI tool node, which can be used for file/message backup, supports Telegram, Discord, Alist yike, etc./ComfyUI 推送节点，可用于文件/消息 备份，支持Telegram, Discord, Alist yike 等等"
 version = "1.0.0"
 license = "LICENSE"
-dependencies = ["python-telegram-bot", "requests_toolbelt", "python-dotenv"，"discord-webhook"]
+dependencies = ["python-telegram-bot", "requests_toolbelt", "python-dotenv","discord-webhook"]
 
 [project.urls]
 Repository = "https://github.com/GentlemanHu/ComfyUI-Notifier"
