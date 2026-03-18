@@ -1,11 +1,7 @@
-# ... (Notifier classes and NotificationManager remain the same) ...
-
 from .notifier.notify import NotificationManager
 
 
 class GeneralNotifier:
-    # ... (Other methods remain the same) ...
-
     @classmethod
     def INPUT_TYPES(cls):
         manager = NotificationManager.get_instance()
@@ -13,10 +9,21 @@ class GeneralNotifier:
 
         input_types = {
             "required": {
-                "file_path": ("STRING",{"default": ""}),
+                "file_path": ("STRING", {"default": ""}),
                 "message": ("STRING", {"default": ""}),
             },
-            "optional": {}
+            "optional": {
+                "image": ("IMAGE",),
+                "audio": ("AUDIO",),
+                "video": ("STRING", {"default": ""}),
+                "filename": ("STRING", {"default": "", "multiline": False}),
+                "media_type": (["auto", "path", "image", "audio", "video", "binary"], {"default": "auto"}),
+                "delivery_mode": (["auto", "media", "file", "zip"], {"default": "auto"}),
+                "execution_mode": (["async", "sync"], {"default": "async"}),
+                "parallel_dispatch": ("BOOLEAN", {"default": True}),
+                "send_as_file": ("BOOLEAN", {"default": False}),
+                "send_as_zip": ("BOOLEAN", {"default": False}),
+            },
         }
 
         for info in notifier_info:
@@ -24,26 +31,43 @@ class GeneralNotifier:
             input_types["optional"][notifier_name] = ("BOOLEAN", {"default": True})
 
         return input_types
-    
-    #TODO - 返回各个渠道的结果url
+
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("Result URL",)
     FUNCTION = "try_notify"
     OUTPUT_NODE = True
 
     CATEGORY = "GentlemanHu_Notifier"
-    
-    def try_notify(self, file_path, message, **kwargs):
-        enabled_notifiers = [name for name, enabled in kwargs.items() if enabled]
+
+    def try_notify(self, file_path, message, image=None, audio=None, video="", filename="", media_type="auto", delivery_mode="auto", execution_mode="async", parallel_dispatch=True, send_as_file=False, send_as_zip=False, **kwargs):
+        enabled_notifiers = [
+            name for name, enabled in kwargs.items()
+            if enabled is True and name not in {"send_as_file", "send_as_zip", "delivery_mode", "execution_mode", "parallel_dispatch"}
+        ]
+
+        resolved_delivery_mode = delivery_mode
+        if send_as_zip:
+            resolved_delivery_mode = "zip"
+        elif send_as_file:
+            resolved_delivery_mode = "file"
+
         manager = NotificationManager.get_instance()
-        manager.notify_all(file_path, message, enabled_notifiers)
+        result = manager.notify_all(
+            file_path=file_path,
+            msg=message,
+            enabled_notifiers=enabled_notifiers,
+            image=image,
+            audio=audio,
+            video=video,
+            filename=filename,
+            media_type=media_type,
+            delivery_mode=resolved_delivery_mode,
+            execution_mode=execution_mode,
+            parallel_dispatch=parallel_dispatch,
+        )
 
-        ret = True  # Assuming success
-        print(f"Triggered notifications for: {file_path}")
-        #TODO - 返回各个渠道的结果url
-        return ("",)
-
-# ... (Rest of the code remains the same) ...
+        print(f"Triggered notifications for input: {file_path or filename or media_type}")
+        return (result.summary_text(),)
 
 
 NODE_CLASS_MAPPINGS = {

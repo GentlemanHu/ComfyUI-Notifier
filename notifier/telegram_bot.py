@@ -1,45 +1,72 @@
-import logging
-import asyncio
-from time import sleep
-from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, Updater
-from telegram.ext._utils.types import BT
-import json
 import os
-import threading
 
+from telegram.ext import ApplicationBuilder
+from telegram.ext._utils.types import BT
 
-from .base import Notifier
+from .base import ChannelCapabilities, DeliveryMode, DeliveryPlan, DeliveryResult, Notifier, SupportLevel
+
 
 class TelegramNotifier(Notifier):
     def __init__(self, token, chat_id):
         super().__init__()
-            # Create the Updater and pass it your bot's token.
         self.application = ApplicationBuilder().token(token).build()
         self.bot: BT = self.application.bot
         self.chat_id = chat_id
-        
 
-    async def send_notification(self, file, msg):
-        file_size = os.path.getsize(file)
-        file_name = os.path.basename(file)
-        extension = os.path.splitext(file)[1].lstrip(".")
-        image_extensions = ['png', 'jpg', 'jpeg', 'bmp', 'webp']
+    def capabilities(self) -> ChannelCapabilities:
+        return ChannelCapabilities(
+            media=SupportLevel.NATIVE,
+            file=SupportLevel.NATIVE,
+            zip=SupportLevel.NATIVE,
+            image=True,
+            audio=True,
+            video=True,
+            binary=True,
+        )
 
-        try:
-            if file_size <= 10 * 1024 * 1024 and extension in image_extensions:
-                with open(file, 'rb') as f:
-                    sent_message = await self.bot.send_photo(self.chat_id, photo=f, caption=file_name, write_timeout=3000)
+    async def send_with_plan(self, payload, msg, plan: DeliveryPlan) -> DeliveryResult:
+        async def _execute():
+            if plan.resolved_mode == DeliveryMode.ZIP:
+                sent_message = await self._send_zip_document(payload)
+            elif plan.resolved_mode == DeliveryMode.FILE:
+                sent_message = await self._send_document(payload)
             else:
-                with open(file, 'rb') as f:
-                    sent_message = await self.bot.send_document(self.chat_id, document=f, caption=file_name, write_timeout=3000)
+                sent_message = await self._send_media(payload)
 
             await self.reply_msg(sent_message.message_id, msg)
-            self.log_info(f"Telegram notification sent for file: {file}")
-        except Exception as e:
-            self.log_error(f"Failed to send Telegram notification: {e}")
+        return await self.timed_send(payload, msg, plan, _execute)
+
+    async def _send_media(self, payload):
+        if payload.media_category == "image" and payload.file_size <= 10 * 1024 * 1024:
+            with payload.open_binary() as file_obj:
+                return await self.bot.send_photo(self.chat_id, photo=file_obj, caption=payload.file_name, write_timeout=3000)
+
+        if payload.media_category == "audio":
+            with payload.open_binary() as file_obj:
+                return await self.bot.send_audio(self.chat_id, audio=file_obj, caption=payload.file_name, title=payload.file_name, write_timeout=3000)
+
+        if payload.media_category == "video":
+            with payload.open_binary() as file_obj:
+                return await self.bot.send_video(self.chat_id, video=file_obj, caption=payload.file_name, write_timeout=3000)
+
+        return await self._send_document(payload)
+
+    async def _send_document(self, payload):
+        with payload.open_binary() as file_obj:
+            return await self.bot.send_document(self.chat_id, document=file_obj, caption=payload.file_name, write_timeout=3000)
+
+    async def _send_zip_document(self, payload):
+        import io
+        import zipfile
+
+        memory_zip = io.BytesIO()
+        with zipfile.ZipFile(memory_zip, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+            zip_file.write(payload.file_path, payload.file_name)
+        memory_zip.seek(0)
+        memory_zip.name = f"{os.path.splitext(payload.file_name)[0]}.zip"
+        return await self.bot.send_document(self.chat_id, document=memory_zip, caption=memory_zip.name, write_timeout=3000)
 
     async def reply_msg(self, message_id, message):
-        msgs = [message[i:i + 4096] for i in range(0, len(message), 4096)]
+        msgs = [message[i:i + 4096] for i in range(0, len(message), 4096)] or [""]
         for text in msgs:
             await self.bot.send_message(self.chat_id, text=text, reply_to_message_id=message_id)

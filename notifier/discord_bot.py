@@ -1,11 +1,10 @@
+import io
 import os
-from discord_webhook import DiscordEmbed, DiscordWebhook
-import logging
 import zipfile
-import asyncio
-import threading
 
-from .base import Notifier
+from discord_webhook import DiscordEmbed, DiscordWebhook
+
+from .base import ChannelCapabilities, DeliveryMode, DeliveryPlan, DeliveryResult, Notifier, SupportLevel
 
 
 class DiscordNotifier(Notifier):
@@ -13,54 +12,66 @@ class DiscordNotifier(Notifier):
         super().__init__()
         self.webhook_url = webhook_url
 
-    async def send_notification(self, file, msg):
-        try:
-            await self.send_image(file, msg)
-            await self.send_file(file, msg)
-            self.log_info(f"Discord notification sent for file: {file}")
-        except Exception as e:
-            self.log_error(f"Failed to send Discord notification: {e}")
+    def capabilities(self) -> ChannelCapabilities:
+        return ChannelCapabilities(
+            media=SupportLevel.NATIVE,
+            file=SupportLevel.NATIVE,
+            zip=SupportLevel.NATIVE,
+            image=True,
+            audio=True,
+            video=True,
+            binary=True,
+        )
 
-    async def send_image(self, file, msg):
-        with open(file, "rb") as f:
-            webhook = DiscordWebhook(url=self.webhook_url)
-            webhook.add_file(file=f.read(), filename=f"{os.path.basename(f.name)}")
-
-            if len(msg) <= 2000:
-                embed = DiscordEmbed(title=f"{os.path.basename(f.name)}", description=f"{msg}", color="03b2f8")
-                embed.set_thumbnail(url=f"attachment://{f.name}")
-                webhook.add_embed(embed)
-                webhook.execute()
+    async def send_with_plan(self, payload, msg, plan: DeliveryPlan) -> DeliveryResult:
+        async def _execute():
+            if plan.resolved_mode == DeliveryMode.ZIP:
+                await self._send_zip_fallback(payload, msg)
+            elif plan.resolved_mode == DeliveryMode.FILE:
+                await self._send_file(payload, msg)
             else:
-                msg_parts = [msg[i:i+2000] for i in range(0, len(msg), 2000)]
-                for i, part in enumerate(msg_parts):
-                    embed = DiscordEmbed(title=f"{os.path.basename(f.name)} - Part {i+1}", description=part, color="03b2f8")
-                    if i == 0:
-                        embed.set_thumbnail(url=f"attachment://{f.name}")
-                    webhook.add_embed(embed)
-                    webhook.execute()
+                await self._send_media(payload, msg)
+        return await self.timed_send(payload, msg, plan, _execute)
 
-    async def send_file(self, file, msg):
-        zip_file_path = f"{file}.zip"
-        with zipfile.ZipFile(zip_file_path, "w") as zip_file:
-            zip_file.write(file, os.path.basename(file))
+    async def _send_media(self, payload, msg):
+        await self.run_blocking(self._execute_media, payload, msg)
 
-        with open(zip_file_path, "rb") as f:
+    def _execute_media(self, payload, msg):
+        with payload.open_binary() as file_obj:
             webhook = DiscordWebhook(url=self.webhook_url)
-            webhook.add_file(file=f.read(), filename=f"{os.path.basename(f.name)}.zip")
+            webhook.add_file(file=file_obj.read(), filename=payload.file_name)
 
-            if len(msg) <= 2000:
-                embed = DiscordEmbed(title=f"{os.path.basename(f.name)}.zip", description=f"{msg}", color="03b2f8")
-                embed.set_thumbnail(url=f"attachment://{f.name}.zip")
+            msg_parts = [msg[i:i + 2000] for i in range(0, len(msg), 2000)] or [""]
+            for index, part in enumerate(msg_parts):
+                embed = DiscordEmbed(
+                    title=payload.file_name if len(msg_parts) == 1 else f"{payload.file_name} - Part {index + 1}",
+                    description=part,
+                    color="03b2f8",
+                )
+                if index == 0 and payload.media_category == "image":
+                    embed.set_thumbnail(url=f"attachment://{payload.file_name}")
                 webhook.add_embed(embed)
-                webhook.execute()
-            else:
-                msg_parts = [msg[i:i+2000] for i in range(0, len(msg), 2000)]
-                for i, part in enumerate(msg_parts):
-                    embed = DiscordEmbed(title=f"{os.path.basename(f.name)}.zip - Part {i+1}", description=part, color="03b2f8")
-                    if i == 0:
-                        embed.set_thumbnail(url=f"attachment://{f.name}.zip")
-                    webhook.add_embed(embed)
-                    webhook.execute()
+            webhook.execute()
 
-        os.remove(zip_file_path)
+    async def _send_file(self, payload, msg):
+        await self.run_blocking(self._execute_file, payload, msg)
+
+    def _execute_file(self, payload, msg):
+        with payload.open_binary() as file_obj:
+            webhook = DiscordWebhook(url=self.webhook_url, content=msg[:2000] if msg else None)
+            webhook.add_file(file=file_obj.read(), filename=payload.file_name)
+            webhook.execute()
+
+    async def _send_zip_fallback(self, payload, msg):
+        await self.run_blocking(self._execute_zip_fallback, payload, msg)
+
+    def _execute_zip_fallback(self, payload, msg):
+        memory_zip = io.BytesIO()
+        with zipfile.ZipFile(memory_zip, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+            zip_file.write(payload.file_path, payload.file_name)
+        memory_zip.seek(0)
+
+        webhook = DiscordWebhook(url=self.webhook_url, content=msg[:2000] if msg else None)
+        archive_name = f"{os.path.splitext(payload.file_name)[0]}.zip"
+        webhook.add_file(file=memory_zip.getvalue(), filename=archive_name)
+        webhook.execute()
