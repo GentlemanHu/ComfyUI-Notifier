@@ -7,7 +7,7 @@ from typing import Dict, List
 
 from dotenv import load_dotenv
 
-from .base import DeliveryResult, Notifier
+from .base import DeliveryResult, Notifier, RetryPolicy
 from .discord_bot import DiscordNotifier
 from .media_adapter import MediaAdapter
 from .telegram_bot import TelegramNotifier
@@ -45,20 +45,20 @@ class NotificationManager:
         self.logger = logging.getLogger(self.__class__.__name__)
         self._auto_register_notifiers()
 
-    def _dispatch_single_sync(self, name, notifier, payload, msg):
+    def _dispatch_single_sync(self, name, notifier, payload, msg, retry_policy: RetryPolicy):
         self.logger.info(
-            f"Dispatch sync | notifier={name} | category={payload.media_category} | requested={payload.requested_delivery_mode.value}"
+            f"Dispatch sync | notifier={name} | category={payload.media_category} | requested={payload.requested_delivery_mode.value} | retry_attempts={retry_policy.attempts}"
         )
-        future = notifier.notify(payload, msg)
+        future = notifier.notify(payload, msg, retry_policy=retry_policy)
         return future.result()
 
-    def _run_sync(self, payload, msg, enabled_notifiers: List[str], result: NotificationResult, parallel: bool):
+    def _run_sync(self, payload, msg, enabled_notifiers: List[str], result: NotificationResult, parallel: bool, retry_policy: RetryPolicy):
         selected_items = [(name, notifier) for name, notifier in self.notifiers.items() if name in enabled_notifiers]
         if parallel:
             worker_count = max(1, len(selected_items))
             with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="NotifierDispatch") as executor:
                 future_map = {
-                    executor.submit(self._dispatch_single_sync, name, notifier, payload, msg): name
+                    executor.submit(self._dispatch_single_sync, name, notifier, payload, msg, retry_policy): name
                     for name, notifier in selected_items
                 }
                 for future in concurrent.futures.as_completed(future_map):
@@ -66,26 +66,26 @@ class NotificationManager:
                     result.notifier_results[delivery_result.notifier_name] = delivery_result
         else:
             for name, notifier in selected_items:
-                delivery_result = self._dispatch_single_sync(name, notifier, payload, msg)
+                delivery_result = self._dispatch_single_sync(name, notifier, payload, msg, retry_policy)
                 result.notifier_results[delivery_result.notifier_name] = delivery_result
 
-    def _background_dispatch(self, payload, msg, enabled_notifiers: List[str], parallel: bool):
+    def _background_dispatch(self, payload, msg, enabled_notifiers: List[str], parallel: bool, retry_policy: RetryPolicy):
         self.logger.info(
-            f"Background dispatch start | category={payload.media_category} | requested={payload.requested_delivery_mode.value} | parallel={parallel}"
+            f"Background dispatch start | category={payload.media_category} | requested={payload.requested_delivery_mode.value} | parallel={parallel} | retry_attempts={retry_policy.attempts}"
         )
         background_result = NotificationResult(payload_path=payload.file_path, payload_category=payload.media_category)
         try:
-            self._run_sync(payload, msg, enabled_notifiers, background_result, parallel)
+            self._run_sync(payload, msg, enabled_notifiers, background_result, parallel, retry_policy)
             self.logger.info(
                 f"Background dispatch finished | category={payload.media_category} | summary={background_result.summary_text()}"
             )
         except Exception as exc:
             self.logger.error(f"Background dispatch failed | error={exc}")
 
-    def _run_async_background(self, payload, msg, enabled_notifiers: List[str], parallel: bool):
+    def _run_async_background(self, payload, msg, enabled_notifiers: List[str], parallel: bool, retry_policy: RetryPolicy):
         thread = threading.Thread(
             target=self._background_dispatch,
-            args=(payload, msg, enabled_notifiers, parallel),
+            args=(payload, msg, enabled_notifiers, parallel, retry_policy),
             daemon=True,
             name="ComfyUI-Notifier-BackgroundDispatch",
         )
@@ -137,15 +137,25 @@ class NotificationManager:
 
         execution_mode = media_inputs.pop("execution_mode", "async")
         parallel = bool(media_inputs.pop("parallel_dispatch", True))
+        retry_attempts = max(0, int(media_inputs.pop("retry_attempts", 0)))
+        retry_delay_seconds = float(media_inputs.pop("retry_delay_seconds", 1.5))
+        retry_backoff_factor = float(media_inputs.pop("retry_backoff_factor", 2.0))
+
+        retry_policy = RetryPolicy(
+            attempts=retry_attempts,
+            initial_delay_seconds=retry_delay_seconds,
+            backoff_factor=retry_backoff_factor,
+        )
+
         payload = self.media_adapter.resolve_payload(file_path=file_path, **media_inputs)
         result = NotificationResult(payload_path=payload.file_path, payload_category=payload.media_category)
 
         self.logger.info(
-            f"Notify request received | payload={payload.file_path} | category={payload.media_category} | execution_mode={execution_mode} | parallel={parallel} | enabled_notifiers={enabled_notifiers}"
+            f"Notify request received | payload={payload.file_path} | category={payload.media_category} | execution_mode={execution_mode} | parallel={parallel} | retry_attempts={retry_policy.attempts} | retry_delay_seconds={retry_policy.initial_delay_seconds} | retry_backoff_factor={retry_policy.backoff_factor} | enabled_notifiers={enabled_notifiers}"
         )
 
         if execution_mode == "async":
-            self._run_async_background(payload, msg, enabled_notifiers, parallel)
+            self._run_async_background(payload, msg, enabled_notifiers, parallel, retry_policy)
             for name in enabled_notifiers:
                 result.notifier_results[name] = DeliveryResult(
                     notifier_name=name,
@@ -153,11 +163,11 @@ class NotificationManager:
                     resolved_mode="background",
                     status="queued",
                     fallback_reason=None,
-                    detail=f"queued for background dispatch; parallel={parallel}",
+                    detail=f"queued for background dispatch; parallel={parallel}; retry_attempts={retry_policy.attempts}",
                     duration_ms=0,
                 )
             return result
 
-        self._run_sync(payload, msg, enabled_notifiers, result, parallel)
+        self._run_sync(payload, msg, enabled_notifiers, result, parallel, retry_policy)
 
         return result

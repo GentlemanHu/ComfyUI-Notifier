@@ -49,6 +49,13 @@ class DeliveryResult:
     duration_ms: int = 0
 
 
+@dataclass(frozen=True)
+class RetryPolicy:
+    attempts: int = 0
+    initial_delay_seconds: float = 1.5
+    backoff_factor: float = 2.0
+
+
 class Notifier:
     def __init__(self):
         self.loop = asyncio.new_event_loop()
@@ -61,6 +68,44 @@ class Notifier:
             level=logging.INFO,
         )
         self.logger = logging.getLogger(self.__class__.__name__)
+
+    def _sanitize_retry_policy(self, retry_policy: RetryPolicy | None) -> RetryPolicy:
+        if retry_policy is None:
+            return RetryPolicy()
+
+        attempts = max(0, int(retry_policy.attempts))
+        initial_delay = float(retry_policy.initial_delay_seconds)
+        backoff = float(retry_policy.backoff_factor)
+
+        if initial_delay < 0:
+            initial_delay = 0.0
+        if backoff < 1.0:
+            backoff = 1.0
+
+        return RetryPolicy(
+            attempts=attempts,
+            initial_delay_seconds=initial_delay,
+            backoff_factor=backoff,
+        )
+
+    def _is_retryable_exception(self, exc: Exception) -> bool:
+        if isinstance(exc, (TimeoutError, ConnectionError, ConnectionResetError)):
+            return True
+
+        exc_type_name = type(exc).__name__.lower()
+        retryable_markers = (
+            "connecterror",
+            "connectionerror",
+            "timeout",
+            "ssl",
+            "remoteprotocolerror",
+            "chunkedencodingerror",
+            "protocolerror",
+            "networkerror",
+            "pooltimeout",
+            "eoferror",
+        )
+        return any(marker in exc_type_name for marker in retryable_markers)
 
     def run_asyncio_loop(self, loop):
         asyncio.set_event_loop(loop)
@@ -99,15 +144,16 @@ class Notifier:
             return DeliveryPlan(requested_mode, DeliveryMode.ZIP, f"{requested_mode.value}_unsupported_fallback_to_zip")
         raise ValueError(f"{self.__class__.__name__} cannot satisfy requested mode: {requested_mode.value}")
 
-    async def send_with_plan(self, payload, msg, plan: DeliveryPlan) -> DeliveryResult:
+    async def send_with_plan(self, payload, msg, plan: DeliveryPlan, retry_policy: RetryPolicy | None = None) -> DeliveryResult:
         raise NotImplementedError("Subclasses must implement send_with_plan method")
 
-    def notify(self, payload, msg):
+    def notify(self, payload, msg, retry_policy: RetryPolicy | None = None):
+        retry_policy = self._sanitize_retry_policy(retry_policy)
         plan = self.resolve_delivery_plan(payload)
         self.log_info(
-            f"Queue notification | notifier={self.__class__.__name__} | category={payload.media_category} | requested={plan.requested_mode.value} | resolved={plan.resolved_mode.value} | fallback={plan.fallback_reason or 'none'}"
+            f"Queue notification | notifier={self.__class__.__name__} | category={payload.media_category} | requested={plan.requested_mode.value} | resolved={plan.resolved_mode.value} | fallback={plan.fallback_reason or 'none'} | retry_attempts={retry_policy.attempts}"
         )
-        return asyncio.run_coroutine_threadsafe(self.send_with_plan(payload, msg, plan), self.loop)
+        return asyncio.run_coroutine_threadsafe(self.send_with_plan(payload, msg, plan, retry_policy=retry_policy), self.loop)
 
     async def run_blocking(self, func, *args, **kwargs):
         loop = asyncio.get_running_loop()
@@ -124,21 +170,39 @@ class Notifier:
             duration_ms=duration_ms,
         )
 
-    async def timed_send(self, payload, msg, plan: DeliveryPlan, send_callable):
+    async def timed_send(self, payload, msg, plan: DeliveryPlan, send_callable, retry_policy: RetryPolicy | None = None):
+        retry_policy = self._sanitize_retry_policy(retry_policy)
         start_time = time.perf_counter()
-        try:
-            await send_callable()
-            duration_ms = int((time.perf_counter() - start_time) * 1000)
-            self.log_info(
-                f"Send success | notifier={self.__class__.__name__} | category={payload.media_category} | requested={plan.requested_mode.value} | resolved={plan.resolved_mode.value} | duration_ms={duration_ms}"
-            )
-            return self.build_result(plan, "sent", duration_ms=duration_ms)
-        except Exception as exc:
-            duration_ms = int((time.perf_counter() - start_time) * 1000)
-            self.log_error(
-                f"Send failed | notifier={self.__class__.__name__} | category={payload.media_category} | requested={plan.requested_mode.value} | resolved={plan.resolved_mode.value} | duration_ms={duration_ms} | error={exc}"
-            )
-            return self.build_result(plan, "error", str(exc), duration_ms=duration_ms)
+        total_attempts = retry_policy.attempts + 1
+        delay_seconds = retry_policy.initial_delay_seconds
+
+        for attempt in range(1, total_attempts + 1):
+            try:
+                await send_callable()
+                duration_ms = int((time.perf_counter() - start_time) * 1000)
+                self.log_info(
+                    f"Send success | notifier={self.__class__.__name__} | category={payload.media_category} | requested={plan.requested_mode.value} | resolved={plan.resolved_mode.value} | duration_ms={duration_ms} | attempt={attempt}/{total_attempts}"
+                )
+                return self.build_result(plan, "sent", duration_ms=duration_ms)
+            except Exception as exc:
+                is_retryable = self._is_retryable_exception(exc)
+                can_retry = attempt < total_attempts and is_retryable
+
+                if can_retry:
+                    self.log_error(
+                        f"Send attempt failed, will retry | notifier={self.__class__.__name__} | category={payload.media_category} | requested={plan.requested_mode.value} | resolved={plan.resolved_mode.value} | attempt={attempt}/{total_attempts} | delay_seconds={delay_seconds:.2f} | error={exc}"
+                    )
+                    if delay_seconds > 0:
+                        await asyncio.sleep(delay_seconds)
+                    delay_seconds = min(delay_seconds * retry_policy.backoff_factor, 30.0)
+                    continue
+
+                duration_ms = int((time.perf_counter() - start_time) * 1000)
+                retry_hint = "retryable" if is_retryable else "non-retryable"
+                self.log_error(
+                    f"Send failed | notifier={self.__class__.__name__} | category={payload.media_category} | requested={plan.requested_mode.value} | resolved={plan.resolved_mode.value} | duration_ms={duration_ms} | attempt={attempt}/{total_attempts} | {retry_hint} | error={exc}"
+                )
+                return self.build_result(plan, "error", str(exc), duration_ms=duration_ms)
 
     def log_info(self, message):
         self.logger.info(message)

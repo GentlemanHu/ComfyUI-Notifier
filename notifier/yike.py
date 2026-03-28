@@ -3,7 +3,7 @@ import urllib.parse
 import requests
 from requests_toolbelt import MultipartEncoder
 
-from .base import ChannelCapabilities, DeliveryMode, DeliveryPlan, DeliveryResult, Notifier, SupportLevel
+from .base import ChannelCapabilities, DeliveryMode, DeliveryPlan, DeliveryResult, Notifier, RetryPolicy, SupportLevel
 
 
 class YikeNotifier(Notifier):
@@ -23,10 +23,10 @@ class YikeNotifier(Notifier):
             binary=True,
         )
 
-    async def send_with_plan(self, payload, msg, plan: DeliveryPlan) -> DeliveryResult:
+    async def send_with_plan(self, payload, msg, plan: DeliveryPlan, retry_policy: RetryPolicy | None = None) -> DeliveryResult:
         async def _execute():
             await self.run_blocking(self._upload, payload, plan)
-        return await self.timed_send(payload, msg, plan, _execute)
+        return await self.timed_send(payload, msg, plan, _execute, retry_policy=retry_policy)
 
     def _upload(self, payload, plan: DeliveryPlan):
         album = "ai_default"

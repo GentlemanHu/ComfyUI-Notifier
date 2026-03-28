@@ -70,19 +70,19 @@ class MediaAdapter:
                     cls._instance = cls()
         return cls._instance
 
-    def resolve_payload(self, *, file_path: str = "", image: Any = None, audio: Any = None, video: str = "", filename: str = "", media_type: str = "auto", delivery_mode: str = "auto") -> MediaPayload:
+    def resolve_payload(self, *, file_path: str = "", image: Any = None, audio: Any = None, video: str = "", filename: str = "", media_type: str = "auto", delivery_mode: str = "auto", audio_format: str = "auto", audio_quality: str = "auto", video_format: str = "auto") -> MediaPayload:
         requested_delivery_mode = self._normalize_delivery_mode(delivery_mode)
         if file_path:
             return self._payload_from_path(file_path, filename=filename, media_type=media_type, requested_delivery_mode=requested_delivery_mode)
         if video:
-            return self._payload_from_path(video, filename=filename, media_type=("video" if media_type == "auto" else media_type), requested_delivery_mode=requested_delivery_mode)
+            return self._payload_from_path(video, filename=filename, media_type=("video" if media_type == "auto" else media_type), requested_delivery_mode=requested_delivery_mode, video_format=video_format)
         if audio is not None:
-            return self._payload_from_audio(audio, filename=filename, requested_delivery_mode=requested_delivery_mode)
+            return self._payload_from_audio(audio, filename=filename, requested_delivery_mode=requested_delivery_mode, audio_format=audio_format, audio_quality=audio_quality)
         if image is not None:
             return self._payload_from_image(image, filename=filename, requested_delivery_mode=requested_delivery_mode)
         raise ValueError("No valid media input provided. Expected file_path, video, audio or image.")
 
-    def _payload_from_path(self, raw_path: str, *, filename: str = "", media_type: str = "auto", requested_delivery_mode: DeliveryMode = DeliveryMode.AUTO) -> MediaPayload:
+    def _payload_from_path(self, raw_path: str, *, filename: str = "", media_type: str = "auto", requested_delivery_mode: DeliveryMode = DeliveryMode.AUTO, video_format: str = "auto") -> MediaPayload:
         normalized_path = folder_paths.get_annotated_filepath(raw_path) if self._looks_like_annotated_path(raw_path) else raw_path
         normalized_path = os.path.abspath(normalized_path)
         if not os.path.exists(normalized_path):
@@ -101,30 +101,34 @@ class MediaAdapter:
             is_temporary=False,
         )
 
-    def _payload_from_audio(self, audio: dict, *, filename: str = "", requested_delivery_mode: DeliveryMode = DeliveryMode.AUTO) -> MediaPayload:
-        cache_key = self._hash_audio(audio, filename, requested_delivery_mode.value)
+    def _payload_from_audio(self, audio: dict, *, filename: str = "", requested_delivery_mode: DeliveryMode = DeliveryMode.AUTO, audio_format: str = "auto", audio_quality: str = "auto") -> MediaPayload:
+        cache_key = self._hash_audio(audio, filename, requested_delivery_mode.value, audio_format, audio_quality)
         cached = self._get_cached(cache_key)
         if cached is not None:
             return cached
 
-        generated_name = self._sanitize_filename(filename or f"notifier_audio_{cache_key[:12]}.flac")
+        # Determine audio format and quality
+        resolved_format = self._resolve_audio_format(audio_format, filename)
+        resolved_quality = audio_quality if audio_quality != "auto" else "128k"
+        
+        generated_name = self._sanitize_filename(filename or f"notifier_audio_{cache_key[:12]}.{resolved_format}")
         if not generated_name.lower().endswith((".flac", ".mp3", ".opus", ".wav", ".ogg", ".m4a")):
-            generated_name += ".flac"
+            generated_name += f".{resolved_format}"
 
         result = AudioSaveHelper.save_audio(
             audio,
             filename_prefix=f"comfyui_notifier/{cache_key}",
             folder_type="temp",
             cls=None,
-            format=self._audio_format_from_name(generated_name),
-            quality="128k",
+            format=resolved_format,
+            quality=resolved_quality,
         )[0]
         output_path = os.path.join(folder_paths.get_temp_directory(), result.subfolder, result.filename)
         payload = MediaPayload(
             source_kind="audio",
             file_path=output_path,
             file_name=generated_name,
-            mime_type=mimetypes.guess_type(generated_name)[0] or "audio/flac",
+            mime_type=mimetypes.guess_type(generated_name)[0] or f"audio/{resolved_format}",
             media_category="audio",
             requested_delivery_mode=requested_delivery_mode,
             is_temporary=True,
@@ -178,13 +182,15 @@ class MediaAdapter:
         with self._cache_lock:
             self._materialized_cache[cache_key] = payload
 
-    def _hash_audio(self, audio: dict, filename: str, delivery_mode: str) -> str:
+    def _hash_audio(self, audio: dict, filename: str, delivery_mode: str, audio_format: str = "auto", audio_quality: str = "auto") -> str:
         waveform = audio["waveform"].detach().cpu().contiguous()
         sample_rate = str(audio.get("sample_rate", ""))
         digest = hashlib.sha256()
         digest.update(sample_rate.encode("utf-8"))
         digest.update(filename.encode("utf-8"))
         digest.update(delivery_mode.encode("utf-8"))
+        digest.update(audio_format.encode("utf-8"))
+        digest.update(audio_quality.encode("utf-8"))
         digest.update(waveform.numpy().tobytes())
         return digest.hexdigest()
 
@@ -220,6 +226,30 @@ class MediaAdapter:
     def _audio_format_from_name(self, file_name: str) -> str:
         suffix = Path(file_name).suffix.lower().lstrip(".")
         return suffix if suffix in {"flac", "mp3", "opus"} else "flac"
+
+    def _resolve_audio_format(self, audio_format: str, filename: str = "") -> str:
+        """
+        Resolve audio format based on user input or filename.
+        
+        Args:
+            audio_format: User-specified format ("auto", "flac", "mp3", "wav", "opus")
+            filename: Optional filename to infer format from
+            
+        Returns:
+            Resolved format string (flac, mp3, opus, wav)
+        """
+        # Supported formats that AudioSaveHelper.save_audio can handle
+        supported_formats = {"flac", "mp3", "opus", "wav"}
+        
+        if audio_format != "auto" and audio_format in supported_formats:
+            return audio_format
+        
+        if filename:
+            suffix = Path(filename).suffix.lower().lstrip(".")
+            if suffix in supported_formats:
+                return suffix
+        
+        return "flac"  # Default format
 
     def _normalize_delivery_mode(self, delivery_mode: str) -> DeliveryMode:
         try:

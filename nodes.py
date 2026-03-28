@@ -21,8 +21,14 @@ class GeneralNotifier:
                 "delivery_mode": (["auto", "media", "file", "zip"], {"default": "auto"}),
                 "execution_mode": (["async", "sync"], {"default": "async"}),
                 "parallel_dispatch": ("BOOLEAN", {"default": True}),
+                "retry_attempts": ("INT", {"default": 0, "min": 0, "max": 10, "step": 1}),
+                "retry_delay_seconds": ("FLOAT", {"default": 1.5, "min": 0.0, "max": 30.0, "step": 0.1}),
+                "retry_backoff_factor": ("FLOAT", {"default": 2.0, "min": 1.0, "max": 10.0, "step": 0.1}),
                 "send_as_file": ("BOOLEAN", {"default": False}),
                 "send_as_zip": ("BOOLEAN", {"default": False}),
+                "audio_format": (["auto", "flac", "mp3", "wav", "opus"], {"default": "auto"}),
+                "audio_quality": (["auto", "128k", "192k", "256k", "320k"], {"default": "auto"}),
+                "video_format": (["auto", "h264", "h265", "vp9"], {"default": "auto"}),
             },
         }
 
@@ -39,10 +45,10 @@ class GeneralNotifier:
 
     CATEGORY = "GentlemanHu_Notifier"
 
-    def try_notify(self, file_path, message, image=None, audio=None, video="", filename="", media_type="auto", delivery_mode="auto", execution_mode="async", parallel_dispatch=True, send_as_file=False, send_as_zip=False, **kwargs):
+    def try_notify(self, file_path, message, image=None, audio=None, video="", filename="", media_type="auto", delivery_mode="auto", execution_mode="async", parallel_dispatch=True, retry_attempts=0, retry_delay_seconds=1.5, retry_backoff_factor=2.0, send_as_file=False, send_as_zip=False, audio_format="auto", audio_quality="auto", video_format="auto", **kwargs):
         enabled_notifiers = [
             name for name, enabled in kwargs.items()
-            if enabled is True and name not in {"send_as_file", "send_as_zip", "delivery_mode", "execution_mode", "parallel_dispatch"}
+            if enabled is True and name not in {"send_as_file", "send_as_zip", "delivery_mode", "execution_mode", "parallel_dispatch", "retry_attempts", "retry_delay_seconds", "retry_backoff_factor", "audio_format", "audio_quality", "video_format"}
         ]
 
         resolved_delivery_mode = delivery_mode
@@ -64,6 +70,12 @@ class GeneralNotifier:
             delivery_mode=resolved_delivery_mode,
             execution_mode=execution_mode,
             parallel_dispatch=parallel_dispatch,
+            retry_attempts=retry_attempts,
+            retry_delay_seconds=retry_delay_seconds,
+            retry_backoff_factor=retry_backoff_factor,
+            audio_format=audio_format,
+            audio_quality=audio_quality,
+            video_format=video_format,
         )
 
         print(f"Triggered notifications for input: {file_path or filename or media_type}")

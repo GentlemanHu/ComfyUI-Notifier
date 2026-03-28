@@ -4,7 +4,7 @@ import zipfile
 
 from discord_webhook import DiscordEmbed, DiscordWebhook
 
-from .base import ChannelCapabilities, DeliveryMode, DeliveryPlan, DeliveryResult, Notifier, SupportLevel
+from .base import ChannelCapabilities, DeliveryMode, DeliveryPlan, DeliveryResult, Notifier, RetryPolicy, SupportLevel
 
 
 class DiscordNotifier(Notifier):
@@ -23,7 +23,7 @@ class DiscordNotifier(Notifier):
             binary=True,
         )
 
-    async def send_with_plan(self, payload, msg, plan: DeliveryPlan) -> DeliveryResult:
+    async def send_with_plan(self, payload, msg, plan: DeliveryPlan, retry_policy: RetryPolicy | None = None) -> DeliveryResult:
         async def _execute():
             if plan.resolved_mode == DeliveryMode.ZIP:
                 await self._send_zip_fallback(payload, msg)
@@ -31,7 +31,7 @@ class DiscordNotifier(Notifier):
                 await self._send_file(payload, msg)
             else:
                 await self._send_media(payload, msg)
-        return await self.timed_send(payload, msg, plan, _execute)
+        return await self.timed_send(payload, msg, plan, _execute, retry_policy=retry_policy)
 
     async def _send_media(self, payload, msg):
         await self.run_blocking(self._execute_media, payload, msg)
