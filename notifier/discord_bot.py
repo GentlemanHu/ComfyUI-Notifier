@@ -11,7 +11,7 @@ class DiscordNotifier(Notifier):
     def __init__(self, webhook_url):
         super().__init__()
         self.webhook_url = webhook_url
-        self._max_attachment_bytes = self._resolve_max_attachment_bytes()
+        self._default_max_attachment_mb = 20.0
 
     def capabilities(self) -> ChannelCapabilities:
         return ChannelCapabilities(
@@ -24,18 +24,18 @@ class DiscordNotifier(Notifier):
             binary=True,
         )
 
-    async def send_with_plan(self, payload, msg, plan: DeliveryPlan, retry_policy: RetryPolicy | None = None) -> DeliveryResult:
+    async def send_with_plan(self, payload, msg, plan: DeliveryPlan, retry_policy: RetryPolicy | None = None, notifier_options: dict | None = None) -> DeliveryResult:
         async def _execute():
             if plan.resolved_mode == DeliveryMode.ZIP:
-                await self._send_zip_fallback(payload, msg)
+                await self._send_zip_fallback(payload, msg, notifier_options=notifier_options)
             elif plan.resolved_mode == DeliveryMode.FILE:
-                await self._send_file(payload, msg)
+                await self._send_file(payload, msg, notifier_options=notifier_options)
             else:
-                await self._send_media(payload, msg)
+                await self._send_media(payload, msg, notifier_options=notifier_options)
         return await self.timed_send(payload, msg, plan, _execute, retry_policy=retry_policy)
 
-    async def _send_media(self, payload, msg):
-        self._validate_attachment_size(payload)
+    async def _send_media(self, payload, msg, notifier_options: dict | None = None):
+        self._validate_attachment_size(payload, notifier_options=notifier_options)
         await self.run_blocking(self._execute_media, payload, msg)
 
     def _execute_media(self, payload, msg):
@@ -56,8 +56,8 @@ class DiscordNotifier(Notifier):
             response = webhook.execute()
             self._ensure_discord_response_ok(response, payload)
 
-    async def _send_file(self, payload, msg):
-        self._validate_attachment_size(payload)
+    async def _send_file(self, payload, msg, notifier_options: dict | None = None):
+        self._validate_attachment_size(payload, notifier_options=notifier_options)
         await self.run_blocking(self._execute_file, payload, msg)
 
     def _execute_file(self, payload, msg):
@@ -67,7 +67,8 @@ class DiscordNotifier(Notifier):
             response = webhook.execute()
             self._ensure_discord_response_ok(response, payload)
 
-    async def _send_zip_fallback(self, payload, msg):
+    async def _send_zip_fallback(self, payload, msg, notifier_options: dict | None = None):
+        self._validate_attachment_size(payload, notifier_options=notifier_options)
         await self.run_blocking(self._execute_zip_fallback, payload, msg)
 
     def _execute_zip_fallback(self, payload, msg):
@@ -82,23 +83,32 @@ class DiscordNotifier(Notifier):
         response = webhook.execute()
         self._ensure_discord_response_ok(response, payload)
 
-    def _resolve_max_attachment_bytes(self) -> int:
-        raw = os.getenv("DISCORD_WEBHOOK_MAX_ATTACHMENT_MB", "8")
+    def _resolve_max_attachment_bytes(self, notifier_options: dict | None = None) -> int:
+        options = notifier_options or {}
+
+        raw = options.get("discord_max_attachment_mb")
+        if raw in (None, ""):
+            raw = os.getenv("DISCORD_WEBHOOK_MAX_ATTACHMENT_MB", str(self._default_max_attachment_mb))
+
         try:
             size_mb = float(raw)
         except ValueError:
-            size_mb = 8.0
+            size_mb = self._default_max_attachment_mb
+
         if size_mb <= 0:
             return 0
         return int(size_mb * 1024 * 1024)
 
-    def _validate_attachment_size(self, payload):
-        if self._max_attachment_bytes <= 0:
+    def _validate_attachment_size(self, payload, notifier_options: dict | None = None):
+        max_attachment_bytes = self._resolve_max_attachment_bytes(notifier_options=notifier_options)
+        if max_attachment_bytes <= 0:
             return
+
         file_size = payload.file_size
-        if file_size <= self._max_attachment_bytes:
+        if file_size <= max_attachment_bytes:
             return
-        max_mb = self._max_attachment_bytes / (1024 * 1024)
+
+        max_mb = max_attachment_bytes / (1024 * 1024)
         current_mb = file_size / (1024 * 1024)
         raise RuntimeError(
             f"Discord attachment too large before upload | file={payload.file_name} | size_mb={current_mb:.2f} | limit_mb={max_mb:.2f}"

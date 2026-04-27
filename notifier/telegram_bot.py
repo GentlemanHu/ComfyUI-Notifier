@@ -33,7 +33,7 @@ class TelegramNotifier(Notifier):
             binary=True,
         )
 
-    async def send_with_plan(self, payload, msg, plan: DeliveryPlan, retry_policy: RetryPolicy | None = None) -> DeliveryResult:
+    async def send_with_plan(self, payload, msg, plan: DeliveryPlan, retry_policy: RetryPolicy | None = None, notifier_options: dict | None = None) -> DeliveryResult:
         async def _execute():
             if plan.resolved_mode == DeliveryMode.ZIP:
                 sent_message = await self._send_zip_document(payload)

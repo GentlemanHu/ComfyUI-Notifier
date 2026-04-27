@@ -144,16 +144,19 @@ class Notifier:
             return DeliveryPlan(requested_mode, DeliveryMode.ZIP, f"{requested_mode.value}_unsupported_fallback_to_zip")
         raise ValueError(f"{self.__class__.__name__} cannot satisfy requested mode: {requested_mode.value}")
 
-    async def send_with_plan(self, payload, msg, plan: DeliveryPlan, retry_policy: RetryPolicy | None = None) -> DeliveryResult:
+    async def send_with_plan(self, payload, msg, plan: DeliveryPlan, retry_policy: RetryPolicy | None = None, notifier_options: dict | None = None) -> DeliveryResult:
         raise NotImplementedError("Subclasses must implement send_with_plan method")
 
-    def notify(self, payload, msg, retry_policy: RetryPolicy | None = None):
+    def notify(self, payload, msg, retry_policy: RetryPolicy | None = None, notifier_options: dict | None = None):
         retry_policy = self._sanitize_retry_policy(retry_policy)
         plan = self.resolve_delivery_plan(payload)
         self.log_info(
             f"Queue notification | notifier={self.__class__.__name__} | category={payload.media_category} | requested={plan.requested_mode.value} | resolved={plan.resolved_mode.value} | fallback={plan.fallback_reason or 'none'} | retry_attempts={retry_policy.attempts}"
         )
-        return asyncio.run_coroutine_threadsafe(self.send_with_plan(payload, msg, plan, retry_policy=retry_policy), self.loop)
+        return asyncio.run_coroutine_threadsafe(
+            self.send_with_plan(payload, msg, plan, retry_policy=retry_policy, notifier_options=notifier_options),
+            self.loop,
+        )
 
     async def run_blocking(self, func, *args, **kwargs):
         loop = asyncio.get_running_loop()
