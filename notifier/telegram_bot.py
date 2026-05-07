@@ -46,6 +46,7 @@ class TelegramNotifier(Notifier):
         return await self.timed_send(payload, msg, plan, _execute, retry_policy=retry_policy)
 
     async def _send_media(self, payload):
+        self.log_info(f"[TelegramNotifier DEBUG] _send_media | category={payload.media_category} | chat_id='{self.chat_id}' | file={payload.file_name} | size={payload.file_size}")
         if payload.media_category == "image" and payload.file_size <= 10 * 1024 * 1024:
             with payload.open_binary() as file_obj:
                 return await self.bot.send_photo(self.chat_id, photo=file_obj, caption=payload.file_name, **self._request_timeouts)
@@ -147,6 +148,7 @@ class TelegramNotifier(Notifier):
         return parsed
 
     async def _send_document(self, payload):
+        self.log_info(f"[TelegramNotifier DEBUG] _send_document | chat_id='{self.chat_id}' | file={payload.file_name}")
         with payload.open_binary() as file_obj:
             return await self.bot.send_document(self.chat_id, document=file_obj, caption=payload.file_name, **self._request_timeouts)
 
@@ -159,6 +161,7 @@ class TelegramNotifier(Notifier):
             zip_file.write(payload.file_path, payload.file_name)
         memory_zip.seek(0)
         memory_zip.name = f"{os.path.splitext(payload.file_name)[0]}.zip"
+        self.log_info(f"[TelegramNotifier DEBUG] _send_zip_document | chat_id='{self.chat_id}' | file={memory_zip.name}")
         return await self.bot.send_document(self.chat_id, document=memory_zip, caption=memory_zip.name, **self._request_timeouts)
 
     async def reply_msg(self, message_id, message):
@@ -169,4 +172,5 @@ class TelegramNotifier(Notifier):
         for text in msgs:
             if not text.strip():
                 continue
+            self.log_info(f"[TelegramNotifier DEBUG] reply_msg | chat_id='{self.chat_id}' | reply_to={message_id}")
             await self.bot.send_message(self.chat_id, text=text, reply_to_message_id=message_id)

@@ -106,6 +106,10 @@ class NotificationManager:
         yike_base_url = os.getenv("YIKE_BASE_URL")
         yike_token = os.getenv("YIKE_TOKEN")
 
+        # DEBUG: Log the environment loading context for Telegram
+        token_masked = f"{telegram_token[:4]}...{telegram_token[-4:]}" if telegram_token and len(telegram_token) > 8 else ("Set" if telegram_token else "Not Set")
+        self.logger.info(f"[NotificationManager DEBUG] Env loaded | TELEGRAM_CHAT_ID='{telegram_chat_id}' | token={token_masked}")
+
         if telegram_token and telegram_chat_id:
             self.register_notifier(TelegramNotifier(telegram_token, telegram_chat_id))
         if discord_webhook_url:
