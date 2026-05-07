@@ -98,7 +98,10 @@ class NotificationManager:
         return NotificationManager.__instance
 
     def _auto_register_notifiers(self):
-        load_dotenv()
+        # Explicitly load .env from the plugin directory, not the ComfyUI root directory
+        plugin_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env_path = os.path.join(plugin_dir, ".env")
+        load_dotenv(dotenv_path=env_path, override=True)
 
         telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
         telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
